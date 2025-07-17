@@ -1,0 +1,7 @@
+<svg width="400" height="80" viewBox="0 0 400 80" xmlns="http://www.w3.org/2000/svg">
+  <!-- TV v červené barvě -->
+  <text x="20" y="55" font-family="Arial Black, sans-serif" font-size="48" font-weight="900" fill="#D73527">TV</text>
+  
+  <!-- LIESNER v tmavě modré barvě -->
+  <text x="120" y="55" font-family="Arial Black, sans-serif" font-size="48" font-weight="900" fill="#2E4B69">LIESNER</text>
+</svg> 
