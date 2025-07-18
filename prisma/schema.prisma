@@ -10,3 +10,48 @@ datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
+
+model Pipeline {
+  id          String              @id @default(cuid())
+  title       String
+  targetTime  Int                 @default(30)  // target duration in seconds (10-60s)
+  status      String              // running | completed | error
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  steps       PipelineStep[]
+  versions    PipelineVersion[]   // ✅ vztah na verze
+}
+
+model PipelineStep {
+  id            String   @id @default(cuid())
+  pipelineId    String
+  stepName      String
+  order         Int
+  status        String   // pending | running | completed | error
+  outputJson    Json?
+  assetUrls     Json?
+  errorLogs     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  pipeline      Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@unique([pipelineId, stepName])
+}
+
+model PipelineVersion {
+  id              String    @id @default(cuid())
+  pipelineId      String
+  pipeline        Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  versionName     String    // "Snapshot 2025-07-18 14:23"
+  description     String?   // volitelný popis "před úpravou timeline"
+  pipelineTitle   String    // snapshot názvu pipeline
+  totalSteps      Int
+  completedSteps  Int
+
+  snapshot        Json      // kompletní stav kroků
+  createdAt       DateTime  @default(now())
+
+  @@index([pipelineId, createdAt])
+}
