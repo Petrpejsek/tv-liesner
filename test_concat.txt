@@ -1,0 +1,3 @@
+file 'public/uploads/voice_segment_1_1753477909269.mp3'
+file 'public/uploads/voice_segment_2_1753477910738.mp3'
+file 'public/uploads/voice_segment_3_1753477912117.mp3'

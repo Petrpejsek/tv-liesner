@@ -27,6 +27,7 @@ export function createTimeline(
   segmentCount: number = 5
 ): TimelineResult {
   console.log('⏱️ Vytvářím timeline pro script:', script.substring(0, 100) + '...');
+  console.log(`🎯 Pipeline targetDuration: ${targetDuration}s`);
   
   // Základní validace
   if (!script || script.trim().length === 0) {
@@ -36,6 +37,22 @@ export function createTimeline(
   if (targetDuration < 5 || targetDuration > 60) {
     throw new Error('Target duration musí být mezi 5-60 sekund');
   }
+  
+  // ✅ Timeline musí respektovat targetDuration - zkrátit script když je moc dlouhý
+  const wordsPerSecond = 2.3;
+  const maxWords = Math.floor(targetDuration * wordsPerSecond);
+  const originalWords = script.split(/\s+/).filter(w => w.length > 0);
+  
+  console.log(`📊 Max words allowed: ${maxWords} (≈ ${wordsPerSecond} wps)`);
+  console.log(`📝 Original script: ${originalWords.length} words`);
+  
+  let limitedScript = script;
+  if (originalWords.length > maxWords) {
+    console.warn(`⏱️ Script má ${originalWords.length} slov, max pro ${targetDuration}s je ${maxWords} → zkracuji...`);
+    limitedScript = originalWords.slice(0, maxWords).join(' ');
+  }
+  
+  script = limitedScript; // Použij zkrácený script
 
   // Rozdělení scriptu na věty
   const sentences = script
@@ -54,33 +71,41 @@ export function createTimeline(
 
   console.log(`📊 Timeline stats: ${totalWords} slov, ${wordsPerSecond.toFixed(2)} slov/sec`);
 
-  // Seskupení vět do segmentů
-  const sentencesPerSegment = Math.ceil(sentences.length / segmentCount);
-  const segments: TimelineSegment[] = [];
+  // ✅ Generuj segmenty tak, aby každý měl ~3–4s → cca 12–15 slov na segment
+  const wordsPerSegment = Math.floor((12 + 15) / 2); // průměr 13.5 slov
+  const targetSegmentDuration = wordsPerSegment / wordsPerSecond; // ~3-4s
   
+  console.log(`📊 Target: ${wordsPerSegment} slov/segment, ${targetSegmentDuration.toFixed(1)}s/segment`);
+  
+  const segments: TimelineSegment[] = [];
+  const allWords = words; // používáme už omezené slova
   let currentTime = 0;
+  let wordIndex = 0;
 
-  for (let i = 0; i < segmentCount; i++) {
-    const startIdx = i * sentencesPerSegment;
-    const endIdx = Math.min(startIdx + sentencesPerSegment, sentences.length);
-    
-    if (startIdx >= sentences.length) break;
-    
-    const segmentSentences = sentences.slice(startIdx, endIdx);
-    const segmentText = segmentSentences.join('. ') + '.';
-    const segmentWords = segmentText.split(/\s+/).filter(w => w.length > 0);
-    const segmentDuration = segmentWords.length / wordsPerSecond;
+  // ✅ Debug: očekávaný počet segmentů
+  const expectedSegmentCount = Math.ceil(allWords.length / wordsPerSegment);
+  console.log(`🎬 Segments: očekává se ${expectedSegmentCount} segmentů, ~${(targetDuration/expectedSegmentCount).toFixed(2)}s per segment`);
+
+  // Vytvoř segmenty po ~13 slovech
+  let segmentId = 1;
+  while (wordIndex < allWords.length) {
+    const segmentWords = allWords.slice(wordIndex, wordIndex + wordsPerSegment);
+    const segmentText = segmentWords.join(' ');
+    const segmentWordCount = segmentWords.length;
+    const segmentDuration = segmentWordCount / wordsPerSecond;
     
     segments.push({
-      id: `segment_${i + 1}`,
+      id: `segment_${segmentId}`,
       text: segmentText,
       startTime: currentTime,
       endTime: currentTime + segmentDuration,
       duration: segmentDuration,
-      wordCount: segmentWords.length
+      wordCount: segmentWordCount
     });
     
     currentTime += segmentDuration;
+    wordIndex += wordsPerSegment;
+    segmentId++;
   }
 
   // Normalizace časů na target duration

@@ -20,10 +20,10 @@ export async function generateVoice(
 ): Promise<ElevenLabsResponse> {
   console.log('🗣️ ElevenLabs generateVoice() called');
   console.log('🐛 DEBUG - ElevenLabs API parameters:');
+  console.log('📝 finalVoiceId:', voiceId);
+  console.log('🔑 apiKey:', apiKey ? `${apiKey.substring(0, 10)}...` : 'MISSING');
+  console.log('📄 text (first 50 chars):', text.substring(0, 50) + '...');
   console.log('📝 text length:', text.length);
-  console.log('🔑 voiceId:', voiceId);
-
-  console.log('🔑 apiKey starts with:', apiKey.substring(0, 10));
   
   if (!apiKey) {
     console.error('❌ ElevenLabs API klíč je prázdný!');

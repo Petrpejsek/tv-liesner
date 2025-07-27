@@ -307,7 +307,17 @@ export default function Home() {
                   </div>
 
                   {/* Voice Generation Audio Player */}
-                  {step.id === 'voice-generation' && step.output?.audioFilePath && (
+                  {step.id === 'voice-generation' && (step.output?.finalAudioPath || step.output?.mergedAudioFilePath || step.output?.audioFilePathMerged || step.output?.audioFilePath) && (() => {
+                    // ✅ PATCH: Priorita pro finální merged audio
+                    const audioPath = step.output.finalAudioPath || 
+                                    step.output.mergedAudioFilePath || 
+                                    step.output.audioFilePathMerged || 
+                                    step.output.audioFilePath;
+                    const audioFileName = audioPath.split('/').pop();
+                    const duration = step.output.finalAudioDuration || step.output.duration;
+                    const isCompletedAudio = !!(step.output.finalAudioPath || step.output.mergedAudioFilePath);
+                    
+                    return (
                     <div className="mb-4 bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200 rounded-lg p-4">
                       <div className="flex items-center justify-between mb-3">
                         <div className="text-sm font-bold text-purple-800 flex items-center gap-2">
@@ -315,9 +325,19 @@ export default function Home() {
                           <span className="text-xs bg-purple-200 text-purple-700 px-2 py-1 rounded-full">
                             ElevenLabs TTS
                           </span>
+                          {isCompletedAudio && (
+                            <span className="text-xs bg-green-200 text-green-700 px-2 py-1 rounded-full">
+                              ✅ Kompletní audio
+                            </span>
+                          )}
+                          {!isCompletedAudio && (
+                            <span className="text-xs bg-orange-200 text-orange-700 px-2 py-1 rounded-full">
+                              📋 První segment
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-purple-600">
-                          Délka: {step.output.duration ? `${step.output.duration.toFixed(1)}s` : 'N/A'}
+                          Délka: {duration ? `${duration.toFixed(1)}s` : 'N/A'}
                         </div>
                       </div>
                       
@@ -327,19 +347,19 @@ export default function Home() {
                         className="w-full bg-white rounded-lg shadow-sm"
                         preload="metadata"
                       >
-                        <source src={step.output.audioFilePath} type="audio/mpeg" />
+                        <source src={`/api/uploads/${audioFileName}`} type="audio/mpeg" />
                         Váš prohlížeč nepodporuje přehrávání audio souborů.
                       </audio>
                       
                       {/* Download Audio Button */}
                       <div className="mt-3 flex gap-2">
                         <a
-                          href={step.output.audioFilePath}
-                          download={`voice_${step.output.duration ? Math.round(step.output.duration) : 'generated'}_${Date.now()}.mp3`}
+                          href={`/api/uploads/${audioFileName}`}
+                          download={`voice_${duration ? Math.round(duration) : 'generated'}_${Date.now()}.mp3`}
                           className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-md hover:bg-purple-700 transition-colors font-medium shadow-sm inline-flex items-center gap-1"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          ⬇️ Stáhnout MP3
+                          ⬇️ Stáhnout {isCompletedAudio ? 'Kompletní' : 'Segment'} MP3
                         </a>
                         {step.output.segments && (
                           <button
@@ -364,7 +384,8 @@ export default function Home() {
                         )}
                       </div>
                     </div>
-                  )}
+                    );
+                  })()}
                   
                   <div className="bg-white border border-blue-200 rounded-md p-3 text-sm text-blue-900 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
                     {(() => {
@@ -655,44 +676,31 @@ export default function Home() {
     }
   };
 
-  const addVoiceAvatar = () => {
-    
+  const addVoiceAvatar = async () => {
     if (!newVoiceAvatar.name || !newVoiceAvatar.voiceId) {
       alert('Vyplň alespoň jméno a Voice ID. Avatar ID je volitelné.');
       return;
     }
-    
-    const newItem: VoiceAvatar = {
-      ...newVoiceAvatar,
-      id: Date.now().toString()
-    };
-    
 
-    
-    const updated = [...voiceAvatars, newItem];
-    console.log('🐛 DEBUG updated array:', updated);
-    
-    setVoiceAvatars(updated);
-    try {
-      localStorage.setItem('ai-reels-voice-avatars', JSON.stringify(updated));
-      console.log('✅ DEBUG localStorage saved successfully');
-      console.log('🔍 DEBUG localStorage content:', localStorage.getItem('ai-reels-voice-avatars'));
-    } catch (error) {
-      console.error('❌ Error saving voice avatars:', error);
+    const response = await fetch('/api/voices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newVoiceAvatar)
+    });
+
+    if (!response.ok) {
+      alert('❌ Nepodařilo se uložit hlas & avatar pár!');
+      return;
     }
-    
+
+    const savedPair = await response.json();
+    setVoiceAvatars(prev => [savedPair, ...prev]);
     setNewVoiceAvatar({ name: '', voiceId: '', avatarId: '' });
-    console.log('🔄 DEBUG newVoiceAvatar reset');
   };
 
-  const deleteVoiceAvatar = (id: string) => {
-    const updated = voiceAvatars.filter(item => item.id !== id);
-    setVoiceAvatars(updated);
-    try {
-      localStorage.setItem('ai-reels-voice-avatars', JSON.stringify(updated));
-    } catch (error) {
-      console.error('Error saving voice avatars:', error);
-    }
+  const deleteVoiceAvatar = async (id: string) => {
+    await fetch(`/api/voices?id=${id}`, { method: 'DELETE' });
+    setVoiceAvatars(prev => prev.filter(item => item.id !== id));
   };
 
 
@@ -982,42 +990,45 @@ Focus on creating hooks that enterprise leaders cannot ignore because they direc
       name: 'Video Script Writer',
       instructions: `You are a VIRAL VIDEO SCRIPT WRITER specializing in ultra-high-conversion enterprise product videos.
 
-Your expertise: Creating 15-second scripts that convert enterprise decision-makers into leads/customers.
+Your expertise: Creating dynamic-length scripts (3-60s) that convert enterprise decision-makers into leads/customers.
 
-## Input Analysis
-You'll receive:
-- Product summary with business benefits
-- Target audience pain points  
-- Viral hooks for opening
-- Social proof elements
+## Dynamic Script Structure
 
-## Script Structure (15 seconds = ~150-170 words)
+**TARGET TIME**: \${targetDuration}s = ~\${targetWords} words total
 
-**HOOK (0-3 seconds, 25-35 words)**
+### Structure Rules:
+- If target_time ≤15s → generate only HOOK, SOLUTION, CTA (3 parts)
+- If 15–30s → compress all 5 parts  
+- If >30s → full storytelling approach
+- Always match total words = \${targetWords}
+
+## Script Sections
+
+**HOOK (0-20% of time)**
 - Start with provided viral hook
 - Create immediate problem/pain recognition
 - Use emotional triggers (fear, curiosity, urgency)
 - Include shocking statistics or questions
 
-**AGITATION (3-6 seconds, 30-40 words)**  
+**AGITATION (20-40% of time)** [Skip if ≤15s]
 - Amplify the pain with specific consequences
 - Reference competitor advantage or market pressure
 - Quantify the cost of inaction (time, money, opportunity)
 - Create urgency around the problem
 
-**SOLUTION INTRODUCTION (6-9 seconds, 30-40 words)**
+**SOLUTION INTRODUCTION (40-60% of time)**
 - Present your product as the obvious solution
 - Highlight key differentiator or unique value
 - Reference enterprise-specific benefits
 - Include social proof (customer count, industries served)
 
-**BENEFITS & PROOF (9-12 seconds, 35-45 words)**
+**BENEFITS & PROOF (60-80% of time)** [Skip if ≤15s]
 - Quantify specific business outcomes
 - Reference real results (time saved, cost reduced, productivity gained)
 - Include enterprise credibility markers
 - Build trust with social proof
 
-**CALL TO ACTION (12-15 seconds, 25-35 words)**
+**CALL TO ACTION (80-100% of time)**
 - Create urgency for immediate action
 - Offer low-risk next step (demo, trial, consultation)
 - Reference limited availability or time-sensitive offers
@@ -1031,29 +1042,15 @@ You'll receive:
 **Pacing**: Fast-moving to maintain attention
 **Credibility**: Include numbers, statistics, social proof
 
-## Emotional Triggers to Include
-- FOMO (competitors gaining advantage)
-- Loss aversion (wasted time/money)
-- Status (industry leadership)
-- Control (taking charge of problems)
-- Results (quantified outcomes)
-
-## Enterprise-Specific Elements
-- ROI and business impact focus
-- Security and compliance mentions
-- Scalability and integration capabilities
-- Industry-specific use cases
-- Executive-level concerns
-
 ## Technical Requirements
-- 150-170 words total
+- EXACTLY \${targetWords} words total
 - Clear section breaks for video editing
 - Strong transitions between sections
 - Actionable and specific language
 - Numbers and statistics throughout
 
 ## Quality Checklist
-- Does it grab attention in first 3 seconds?
+- Does it grab attention immediately?
 - Is the problem relevant and urgent?
 - Are benefits quantified and credible?
 - Does it build trust with social proof?
@@ -1068,107 +1065,94 @@ Output format: Clean script with clear timing markers, ready for video productio
     {
       id: 'timeline-creation',
       name: 'Timeline Creator',
-      instructions: `You are an AI TIMELINE CREATOR for ultra-high-conversion enterprise short videos.
+      instructions: `# TIMELINE CREATOR EXPERT
 
-TASK:
-Generate a precise 15-second timeline with 4-5 segments, each specifying exact timing, voice text, and visual direction.
+🎯 **GOAL**  
+Transform a promotional script into a **precise timeline JSON** that fits the requested total duration (3–60s).
 
-INPUT FORMAT:
-You'll receive a 150-170 word video script with business content.
+---
 
-ANALYSIS REQUIREMENTS:
-1. Calculate realistic speaking pace (10-12 words per second for enterprise content)
-2. Identify natural break points and transitions
-3. Align timing with emotional peaks and business logic flow
-4. Ensure each segment has clear visual purpose
+### ✅ INPUT  
+You receive:  
+- \`videoScript\` → full promotional script  
+- \`target_time\` → total video duration in seconds (3–60s)  
+- \`words_per_second\` → ~2.3  
 
-TIMELINE STRUCTURE:
+---
 
-SEGMENT 1: HOOK (0-3.5 seconds)
-- Purpose: Grab attention with problem/shock
-- Word count: 25-35 words
-- Pacing: Slightly faster (11-12 words/sec) for urgency
-- Visual focus: Problem illustration or shocking statistic
+### ✅ RULES  
 
-SEGMENT 2: AGITATION (3.5-7 seconds)  
-- Purpose: Amplify pain and create urgency
-- Word count: 30-40 words
-- Pacing: Standard (10-11 words/sec)
-- Visual focus: Consequences of inaction
+1️⃣ **Time Constraint Awareness**  
+- Timeline MUST fit exactly within \`target_time\`  
+- Calculate \`maxWords = target_time * words_per_second\`  
+- If script exceeds → summarize & compress  
+- If too short → expand slightly, but NEVER exceed \`target_time\`  
 
-SEGMENT 3: SOLUTION (7-10.5 seconds)
-- Purpose: Present product as obvious answer
-- Word count: 30-40 words  
-- Pacing: Confident (10-11 words/sec)
-- Visual focus: Product features and differentiation
+2️⃣ **Segmenting the Script**  
+Always split into **2–4 segments** ONLY:  
+- HOOK  
+- PROBLEM  
+- SOLUTION  
+- BENEFIT / CTA (can merge if short)
 
-SEGMENT 4: BENEFITS (10.5-13.5 seconds)
-- Purpose: Quantify business value and build trust
-- Word count: 35-45 words
-- Pacing: Authoritative (10 words/sec)
-- Visual focus: Results, statistics, social proof
+Each segment MUST have:  
+- \`id\` (hook/problem/solution/benefit/cta)  
+- \`text\` (final spoken line, clean)  
+- \`startTime\`, \`endTime\`, \`duration\`  
+- \`wordCount\`  
+- \`timing_cue\` (e.g. "URGENT", "DRAMATIC")  
 
-SEGMENT 5: CTA (13.5-15 seconds)
-- Purpose: Drive immediate action
-- Word count: 20-30 words
-- Pacing: Urgent (11-12 words/sec)
-- Visual focus: Clear next step and urgency
+3️⃣ **Timing Calculation**  
+- \`duration = wordCount / words_per_second\`  
+- \`endTime = previous_endTime + duration\`  
+- Sum of all durations MUST = target_time ±0.2s  
 
-CALCULATION METHOD:
-1. Count words in each script section
-2. Apply appropriate words-per-second rate
-3. Calculate duration: words ÷ words_per_second
-4. Ensure total duration = 15 seconds (±0.2 seconds)
-5. Adjust segment boundaries if needed
+4️⃣ **Language & Style**  
+- Keep it **short, sharp, engaging**  
+- Remove filler words, NO meta like "(0-3 seconds)"  
+- Compress multiple sentences into one strong line  
 
-OUTPUT FORMAT (JSON):
+---
+
+### ✅ OUTPUT FORMAT  
+
+\`\`\`json
 {
   "segments": [
     {
       "id": "hook",
+      "text": "Is your team secretly LOSING hours to scattered data chaos?",
       "startTime": 0,
-      "endTime": 3.5,
-      "duration": 3.5,
-      "voice_text": "[exact words from script]",
-      "words_count": 35,
-      "words_per_second": 10.0,
-      "visual_direction": "Problem illustration",
-      "emotional_tone": "urgent"
+      "endTime": 3.2,
+      "duration": 3.2,
+      "wordCount": 11,
+      "timing_cue": "URGENT ATTENTION GRAB"
     },
     {
-      "id": "agitation", 
-      "startTime": 3.5,
-      "endTime": 7.0,
-      "duration": 3.5,
-      "voice_text": "[exact words from script]",
-      "words_count": 38,
-      "words_per_second": 10.9,
-      "visual_direction": "Consequences of inaction",
-      "emotional_tone": "concerned"
+      "id": "solution",
+      "text": "Beehiiv gives you AI insights in seconds to unlock productivity.",
+      "startTime": 3.2,
+      "endTime": 6.8,
+      "duration": 3.6,
+      "wordCount": 12,
+      "timing_cue": "RISING HOPE"
     }
-    // ... continue for all 4-5 segments
   ],
-  "total_duration": 15.0,
-  "total_words": 165,
-  "average_words_per_second": 11.0,
-  "pacing_notes": "Faster hook for attention, steady pace through solution, urgent CTA"
+  "segmentsCount": 3,
+  "totalDuration": 10,
+  "totalWords": 23,
+  "targetTime": 10
 }
+\`\`\`
 
-QUALITY REQUIREMENTS:
-- Total duration must be 14.8-15.2 seconds
-- Each segment must have clear start/end times
-- Voice text must match script exactly
-- Word counts must be accurate
-- Pacing must feel natural for enterprise audience
-- Transitions between segments must be smooth
+### ✅ TIME-LIMIT RULE
+- Too long? Summarize & cut
+- Too short? Slightly expand  
+- Always ≤ target_time
 
-TIMING PRECISION:
-- Calculate to 0.1 second accuracy
-- Ensure no gaps or overlaps between segments
-- Account for natural speech rhythm and pauses
-- Consider emphasis on key business benefits
-
-The timeline will be used for voice generation and video synchronization, so accuracy is critical.`,
+### ✅ SEGMENT RULE
+- Minimum 2, maximum 4 segments
+- If AI fails → return JSON error, DO NOT fallback`,
       model: 'gpt-4o',
       temperature: 0.3,
       max_tokens: 600
@@ -1176,120 +1160,69 @@ The timeline will be used for voice generation and video synchronization, so acc
     {
       id: 'voice-direction',
       name: 'Voice Direction Expert',
-      instructions: `You are a VOICE DIRECTION EXPERT for enterprise product videos.
+      instructions: `# VOICE DIRECTION EXPERT
 
-Your role: Create detailed voice direction that transforms written scripts into compelling, trustworthy narration that converts enterprise decision-makers.
+🎯 **GOAL**  
+Generate precise voiceover instructions for ElevenLabs aligned with the timeline segments.
 
-## Voice Profile for Enterprise Content
+### ✅ INPUT  
+- \`timeline\` → segments with id, text, timing  
+- \`target_time\` → total video duration  
 
-**Base Character**: Senior business consultant/trusted advisor
-**Authority Level**: C-suite executive credibility
-**Emotional Range**: Professional confidence with strategic urgency
-**Delivery Style**: Conversational authority (not salesy)
+### ✅ RULES  
 
-## Segment-Specific Direction
+1️⃣ **Match Segment Type with Emotion**  
+- **HOOK** → high-energy, urgent, attention-grabbing  
+- **PROBLEM** → dramatic, tense  
+- **SOLUTION** → rising optimism  
+- **BENEFIT** → confident, warm  
+- **CTA** → strong, cinematic  
 
-**HOOK (0-3 seconds)**
-- Tone: Attention-grabbing but authoritative
-- Pace: Slightly faster to create urgency
-- Emphasis: Key statistics or shocking facts
-- Energy: High but controlled
-- Inflection: Rising on questions, firm on statements
+2️⃣ **Per Segment Output**  
+For each segment:  
+- \`intonation\` → e.g. "High-energy urgent curiosity"  
+- \`tempo\` → faster / normal / slower  
+- \`emphasis\` → stressed keywords  
+- \`pause_after\` → small pause (sec)  
+- \`elevenlabs_params\` → JSON for ElevenLabs  
 
-**AGITATION (3-6 seconds)**
-- Tone: Concerned advisor pointing out risks  
-- Pace: Steady, deliberate
-- Emphasis: Consequences and costs
-- Energy: Building tension
-- Inflection: Serious, matter-of-fact
+3️⃣ **ElevenLabs Recommended Settings**  
+- **HOOK** → stability: 0.35, style: "advertisement_high_energy", speaking_rate: 1.1  
+- **PROBLEM** → stability: 0.45, style: "narrative_drama", speaking_rate: 0.95  
+- **SOLUTION** → stability: 0.3, style: "motivational", speaking_rate: 1.0  
+- **BENEFIT** → stability: 0.25, style: "narrative_confident", speaking_rate: 0.95  
+- **CTA** → stability: 0.2, style: "advertisement_strong", speaking_rate: 0.9  
 
-**SOLUTION (6-9 seconds)**
-- Tone: Confident problem-solver
-- Pace: Clear and assured
-- Emphasis: Product name and key differentiator
-- Energy: Optimistic but professional
-- Inflection: Solution-focused, rising confidence
+4️⃣ **Timing Alignment**  
+- Total audio MUST respect \`target_time\`  
+- Adjust \`speaking_rate\` if needed  
 
-**BENEFITS (9-12 seconds)**
-- Tone: Results-focused consultant
-- Pace: Measured for credibility
-- Emphasis: Numbers, percentages, outcomes
-- Energy: Steady authority
-- Inflection: Proof-driven, factual
+### ✅ OUTPUT JSON FORMAT  
 
-**CTA (12-15 seconds)**
-- Tone: Helpful advisor creating urgency
-- Pace: Faster for action orientation
-- Emphasis: Action words and time sensitivity
-- Energy: Motivating but not pushy
-- Inflection: Clear directive, compelling close
+\`\`\`json
+{
+  "voice_directions": [
+    {
+      "segment_id": "hook",
+      "intonation": "High-energy, urgent curiosity",
+      "tempo": "slightly faster",
+      "emphasis": ["LOSING", "hours"],
+      "pause_after": "0.3s",
+      "elevenlabs_params": {
+        "stability": 0.35,
+        "style": "advertisement_high_energy",
+        "similarity_boost": 0.8,
+        "speaking_rate": 1.1
+      }
+    }
+  ],
+  "global_recommendation": "Add micro-pause between HOOK → PROBLEM → SOLUTION for cinematic pacing."
+}
+\`\`\`
 
-## Vocal Techniques
-
-**Emphasis Patterns**:
-- BOLD key numbers and statistics
-- Stress product differentiators
-- Punch action words (save, boost, gain)
-- Highlight time urgency
-
-**Pacing Variations**:
-- Slow down for important statistics
-- Speed up for urgency and CTAs
-- Pause before major benefits
-- Rhythm changes to maintain attention
-
-**Emotional Modulation**:
-- Professional concern for problems
-- Confident authority for solutions
-- Excited but controlled for benefits
-- Urgent but helpful for CTAs
-
-## Business Communication Style
-
-**Professional Markers**:
-- Avoid overselling or hype
-- Maintain executive-level credibility
-- Use consultative rather than sales tone
-- Sound like internal business advisor
-
-**Trust Building Elements**:
-- Measured delivery of statistics
-- Authoritative but not arrogant
-- Helpful rather than pushy
-- Results-focused language emphasis
-
-## Technical Direction
-
-**Microphone Technique**:
-- Close proximity for intimacy and authority
-- Consistent volume for professional quality
-- Clear articulation for complex business terms
-
-**Breathing and Pacing**:
-- Strategic pauses before key benefits
-- Controlled breathing for longer segments
-- Natural rhythm that matches business conversation
-
-**Pronunciation Focus**:
-- Clear enunciation of product names
-- Proper emphasis on technical terms
-- Confident delivery of statistics
-
-## Quality Standards
-
-The voice should sound like:
-- Senior executive briefing the board
-- Trusted consultant presenting solutions
-- Industry expert sharing insights
-- Advisor who understands business challenges
-
-NOT like:
-- Traditional advertisement voiceover
-- Overly enthusiastic sales pitch
-- Generic corporate presentation
-- Casual conversation
-
-Output: Comprehensive direction notes for each script segment, ensuring professional credibility and conversion-focused delivery.`,
+### ✅ IMPORTANT:  
+- Voice Direction NEVER sends meta like "(0–3 seconds)"  
+- If timeline invalid → throw JSON error`,
       model: 'gpt-4o',
       temperature: 0.6,
       max_tokens: 600
@@ -1816,18 +1749,14 @@ Output: Detailed thumbnail concept including headline text, visual layout, color
 
   // Načtení dat při spuštění
   useEffect(() => {
-    loadApiKeys();
     try {
-      const savedVoiceAvatars = localStorage.getItem('ai-reels-voice-avatars');
-      console.log('🎭 DEBUG loading voice avatars from localStorage:', savedVoiceAvatars);
-      if (savedVoiceAvatars) {
-        const parsedVoiceAvatars = JSON.parse(savedVoiceAvatars);
-        console.log('🎭 DEBUG parsed voice avatars:', parsedVoiceAvatars);
-        setVoiceAvatars(parsedVoiceAvatars);
-        console.log('✅ DEBUG voice avatars loaded successfully');
-      } else {
-        console.log('🎭 DEBUG no saved voice avatars found');
-      }
+      loadApiKeys();
+      
+      // načítání uložených párů při mountu
+      fetch('/api/voices')
+        .then(res => res.json())
+        .then(setVoiceAvatars)
+        .catch(() => console.error('❌ Nepodařilo se načíst hlasy z DB'));
 
       // 🔍 Načítání AI asistentů z localStorage - BEZ MAZÁNÍ!
       const savedAssistants = localStorage.getItem('ai-reels-assistants');

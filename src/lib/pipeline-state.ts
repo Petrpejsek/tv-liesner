@@ -272,15 +272,6 @@ export function getDefaultPipelineSteps(): PipelineStep[] {
       isAIStep: true
     },
     {
-      id: 'voice-direction',
-      name: 'Voice Direction Expert',
-      emoji: '🎙️',
-      description: 'Parametry pro hlas',
-      service: 'OpenAI GPT-4o',
-      status: 'waiting',
-      isAIStep: true
-    },
-    {
       id: 'background-selection',
       name: 'Background Selector',
       emoji: '🎨',

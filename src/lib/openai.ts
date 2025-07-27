@@ -108,8 +108,12 @@ export async function generateVideoScript(
 ): Promise<string> {
   const client = getOpenAI();
   
-  const wordsPerSecond = 2.5; // Průměrná rychlost řeči
+  // ✅ Unified: 2.3 slov/s pro konzistenci s Timeline Creator a ElevenLabs
+  const wordsPerSecond = 2.3; // Optimální rychlost pro pochopení
   const targetWords = Math.floor(targetDuration * wordsPerSecond);
+  const minWords = Math.max(targetWords - 5, Math.floor(targetWords * 0.85)); // ±5 slov tolerance
+  
+  console.log(`🎯 Video Script Writer: targetDuration=${targetDuration}s, targetWords=${targetWords}, minWords=${minWords}`);
   
   const defaultAssistant = {
     instructions: '',
@@ -128,6 +132,7 @@ export async function generateVideoScript(
         content: config.instructions
           .replace('${targetDuration}', targetDuration.toString())
           .replace('${targetWords}', targetWords.toString())
+          .replace('${minWords}', minWords.toString())
           .replace('${selectedHook}', selectedHook)
       },
       {
@@ -139,7 +144,21 @@ export async function generateVideoScript(
     temperature: config.temperature
   });
 
-  return response.choices[0]?.message?.content || '';
+  const generatedScript = response.choices[0]?.message?.content || '';
+  
+  // ✅ Validace délky vygenerovaného scriptu
+  const scriptWords = generatedScript.split(/\s+/).filter(w => w.length > 0).length;
+  console.log(`📝 Generated script: ${scriptWords} words (target: ${targetWords}, min: ${minWords})`);
+  
+  if (scriptWords < minWords) {
+    console.warn(`⚠️ Script má jen ${scriptWords} slov, minimum je ${minWords} → mohlo by být krátké pro ${targetDuration}s`);
+  }
+  
+  if (scriptWords > targetWords + 10) {
+    console.warn(`⚠️ Script má ${scriptWords} slov, maximum je ${targetWords + 10} → mohlo by být dlouhé pro ${targetDuration}s`);
+  }
+  
+  return generatedScript;
 } 
 
 // Generování voice direction parametrů
@@ -205,7 +224,7 @@ Create voice direction instructions for each segment with proper intonation, emp
     return rawOutput;
   } catch (error) {
     console.error('❌ Voice Direction API Error:', error);
-    return `Voice direction fallback for script: ${videoScript.substring(0, 100)}...`;
+    throw new Error(`❌ PIPELINE STOPPED: Voice Direction API failed - ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -408,15 +427,11 @@ OUTPUT: Clean JSON array of features`;
       const parsed = JSON.parse(cleanedText);
       return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
     } catch {
-      // Fallback: split by lines and clean
-      return cleanedText.split('\n')
-        .map(line => line.replace(/^[*\-•]\s*/, '').trim())
-        .filter(line => line.length > 10 && line.length < 80)
-        .slice(0, 8);
+      throw new Error('❌ PIPELINE STOPPED: Features cleaning AI parsing failed');
     }
   } catch (error) {
     console.error('❌ cleanFeaturesWithAI error:', error);
-    return rawFeatures.slice(0, 8); // Fallback k původním datům
+    throw new Error(`❌ PIPELINE STOPPED: Features cleaning failed - ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -464,15 +479,11 @@ OUTPUT: Clean JSON array of benefits`;
       const parsed = JSON.parse(cleanedText);
       return Array.isArray(parsed) ? parsed.slice(0, 6) : [];
     } catch {
-      // Fallback: split by lines and clean
-      return cleanedText.split('\n')
-        .map(line => line.replace(/^[*\-•]\s*/, '').trim())
-        .filter(line => line.length > 15 && line.length < 100)
-        .slice(0, 6);
+      throw new Error('❌ PIPELINE STOPPED: Benefits cleaning AI parsing failed');
     }
   } catch (error) {
     console.error('❌ cleanBenefitsWithAI error:', error);
-    return rawBenefits.slice(0, 6); // Fallback k původním datům
+    throw new Error(`❌ PIPELINE STOPPED: Benefits cleaning failed - ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 } 
 
@@ -552,7 +563,7 @@ export async function cleanTextWithAI(scrapedContent: any, assistant?: any): Pro
     }
   } catch (error) {
     console.error('❌ AI Text Cleaner API Error:', error);
-    return scrapedContent;
+    throw new Error(`❌ PIPELINE STOPPED: AI Text Cleaner failed - ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -569,7 +580,31 @@ export async function generateTimeline(
   const maxWords = Math.floor(targetDuration * wordsPerSecond);
   
   const defaultAssistant = {
-    instructions: '# TIMELINE CREATOR\n\nCreate timeline segments for video script.',
+    instructions: `# TIMELINE CREATOR EXPERT
+
+Create precise timeline JSON for video script with ${targetDuration}s duration.
+
+RULES:
+- Split into 2-4 segments only
+- Each segment needs: id, text, startTime, endTime, duration
+- Total duration must equal ${targetDuration}s
+
+OUTPUT FORMAT (STRICT):
+\`\`\`json
+{
+  "segments": [
+    {
+      "id": "segment_1", 
+      "text": "Your text here",
+      "startTime": 0,
+      "endTime": 3,
+      "duration": 3
+    }
+  ],
+  "totalDuration": ${targetDuration},
+  "segmentsCount": 2
+}
+\`\`\``,
     model: "gpt-4o",
     temperature: 0.3,
     max_tokens: 600
@@ -595,7 +630,26 @@ export async function generateTimeline(
       messages: [
         {
           role: "system",
-          content: config.instructions
+          content: config.instructions + `
+
+CRITICAL: Return ONLY valid JSON with this exact schema, no markdown, no explanations:
+
+{
+  "segments": [
+    {
+      "id": "segment_1", 
+      "text": "string",
+      "startTime": number,
+      "endTime": number,
+      "duration": number
+    }
+  ],
+  "metadata": {
+    "totalDuration": number
+  }
+}
+
+If you cannot generate valid JSON, return exactly: {"error":"invalid_timeline"}`
         },
         {
           role: "user",
@@ -603,9 +657,18 @@ export async function generateTimeline(
 Target Duration: ${targetDuration} seconds
 Maximum Words: ${maxWords} words (${wordsPerSecond} words/second)
 
-CRITICAL: If the script is too long, trim it to exactly ${maxWords} words while keeping the most important parts.
+CRITICAL REQUIREMENTS:
+1. Generate EXACTLY 2-4 segments (never just 1)
+2. Each segment should be ${Math.floor(targetDuration/3)}-${Math.floor(targetDuration/2)} seconds
+3. If script is too long, trim to exactly ${maxWords} words while keeping most important parts
+4. Segments must have proper startTime/endTime/duration
 
-Create perfect timeline segments with timing, visual cues, and metadata.`
+STRUCTURE EXAMPLE:
+- Segment 1: Hook/Problem (${Math.floor(targetDuration*0.3)}s)
+- Segment 2: Solution/Benefit (${Math.floor(targetDuration*0.4)}s) 
+- Segment 3: Call to Action (${Math.floor(targetDuration*0.3)}s)
+
+RETURN ONLY VALID JSON WITH MINIMUM 2 SEGMENTS.`
         }
       ],
       max_tokens: config.max_tokens,
@@ -615,79 +678,65 @@ Create perfect timeline segments with timing, visual cues, and metadata.`
     const rawOutput = response.choices[0]?.message?.content || '{}';
     console.log(`⏱️ Timeline Creator RAW OUTPUT (${rawOutput.length} chars):`, rawOutput.substring(0, 200) + '...');
     
-    // Parse JSON output with fallback
+    // Parse JSON output with strict validation - NO FALLBACKS
     let timeline;
     try {
-      // Remove markdown wrapper if present
-      const cleanedOutput = rawOutput.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      timeline = JSON.parse(cleanedOutput);
+      // Remove potential markdown wrapper
+      let jsonText = rawOutput.trim();
+      if (jsonText.startsWith('```json')) {
+        jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
       
-      console.log(`✅ Timeline Creator PARSED OUTPUT: {
-  segmentsCount: ${timeline.segments?.length || 0},
-  totalDuration: ${timeline.metadata?.totalDuration || 'unknown'},
-  totalWords: ${timeline.metadata?.totalWords || 'unknown'},
-  avgWordsPerSec: ${timeline.metadata?.averageWordsPerSecond || 'unknown'}
-}`);
+      timeline = JSON.parse(jsonText);
       
-      return timeline;
-    } catch (parseError) {
-      console.error('❌ Timeline JSON Parse Error:', parseError);
-      console.error('❌ Raw output:', rawOutput);
+      // ✅ STRICT VALIDATION - NO FALLBACKS
+      if (!timeline.segments || !Array.isArray(timeline.segments)) {
+        throw new Error("❌ AI returned timeline without segments array");
+      }
       
-      // Fallback timeline structure
-      const fallbackTimeline = {
-        segments: [
-          {
-            id: "segment_1",
-            text: videoScript.substring(0, Math.min(50, videoScript.length)),
-            startTime: 0,
-            endTime: targetDuration,
-            duration: targetDuration,
-            wordCount: videoScript.split(' ').length,
-            timing_cue: "Clear delivery",
-            visual_cue: "Professional presentation"
-          }
-        ],
-        metadata: {
-          totalDuration: targetDuration,
-          totalWords: videoScript.split(' ').length,
-          averageWordsPerSecond: videoScript.split(' ').length / targetDuration,
-          segments_count: 1,
-          optimization: "Fallback timeline due to parsing error"
+      if (timeline.segments.length < 2) {
+        throw new Error(`❌ AI returned too few segments (${timeline.segments.length} < 2)`);
+      }
+      
+      // ✅ FLEXIBLE VALIDATION: Accept both timeline.totalDuration OR timeline.metadata.totalDuration
+      const totalDuration = timeline.totalDuration || timeline.metadata?.totalDuration;
+      
+      console.log('🔍 DEBUG timeline.totalDuration:', timeline.totalDuration);
+      console.log('🔍 DEBUG timeline.metadata?.totalDuration:', timeline.metadata?.totalDuration);
+      console.log('🔍 DEBUG final totalDuration:', totalDuration);
+      
+      if (typeof totalDuration !== 'number') {
+        throw new Error("❌ AI returned timeline without valid totalDuration (checked both root and metadata levels)");
+      }
+      
+      // ✅ Normalize structure: ensure totalDuration is on root level
+      timeline.totalDuration = totalDuration;
+      
+      // Validate each segment
+      for (let i = 0; i < timeline.segments.length; i++) {
+        const segment = timeline.segments[i];
+        if (!segment.text || segment.text.trim().length < 5) {
+          throw new Error(`❌ Segment ${i + 1} has invalid text: "${segment.text}"`);
         }
-      };
+        if (typeof segment.startTime !== 'number' || typeof segment.endTime !== 'number') {
+          throw new Error(`❌ Segment ${i + 1} has invalid timing`);
+        }
+      }
       
-      console.log('🔄 Using fallback timeline structure');
-      return fallbackTimeline;
+      console.log(`✅ Timeline validation successful: ${timeline.segments.length} segments, ${timeline.totalDuration}s`);
+      
+    } catch (parseError) {
+      console.error('❌ Timeline JSON parsing/validation failed:', parseError);
+      console.log('🔍 Problematic AI output:', rawOutput);
+      throw new Error(`Pipeline STOPPED: Invalid AI timeline response - ${parseError.message}`);
     }
+    
+    return timeline;
     
   } catch (error) {
     console.error('❌ Timeline Creator API Error:', error);
-    
-    // Fallback timeline structure
-    const fallbackTimeline = {
-      segments: [
-        {
-          id: "segment_1",
-          text: videoScript,
-          startTime: 0,
-          endTime: targetDuration,
-          duration: targetDuration,
-          wordCount: videoScript.split(' ').length,
-          timing_cue: "Clear delivery",
-          visual_cue: "Professional presentation"
-        }
-      ],
-      metadata: {
-        totalDuration: targetDuration,
-        totalWords: videoScript.split(' ').length,
-        averageWordsPerSecond: videoScript.split(' ').length / targetDuration,
-        segments_count: 1,
-        optimization: "Fallback timeline due to API error"
-      }
-    };
-    
-    console.log('🔄 Using fallback timeline structure due to API error');
-    return fallbackTimeline;
+    throw new Error(`❌ PIPELINE STOPPED: Timeline Creator API failed - ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

@@ -128,8 +128,8 @@ function extractUrlFromPipeline(pipeline: any): string {
     return webScrapingStep.outputJson.url;
   }
   
-  // Fallback - použij placeholder URL
-  return 'https://example.com';
+  // No URL found in pipeline
+  throw new Error('❌ PIPELINE RESTART FAILED: No valid URL found in pipeline steps');
 }
 
 // Helper funkce pro získání API klíčů

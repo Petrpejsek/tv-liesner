@@ -5,6 +5,7 @@ import { initializeOpenAI, generateProductSummary, generateViralHooks, generateV
 import { generateVoiceFromScript } from '@/lib/voice-pipeline';
 import { checkFFmpegInstallation } from '@/lib/ffmpeg';
 import { PipelineStateManager, getDefaultPipelineSteps } from '@/lib/pipeline-state';
+import { prisma } from '@/lib/database';
 
 // Helper funkce pro kontrolu API klíčů
 function getStoredApiKeys(): { [key: string]: string } {
@@ -64,26 +65,51 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  console.log("🚀 DEBUG /api/pipeline/start CALLED");
+
+  // Načti tělo requestu
+  const body = await request.json().catch(() => null);
+  console.log("📥 Request body:", JSON.stringify(body, null, 2));
+
+  // Debug: načtení hlasů z DB
+  const storedVoices = await prisma.voiceAvatarPair.findMany();
+  console.log("🎤 Stored voices in DB:", storedVoices);
+
+  // Debug: načtení ENV
+  console.log("🌍 ENV ELEVENLABS_VOICE_ID:", process.env.ELEVENLABS_VOICE_ID);
+
+  // Debug fallback priority
+  console.log("✅ Runtime voiceId:", body?.voiceId);
+
+  let finalVoiceId =
+    body?.voiceId ||               // 1️⃣ Frontend
+    process.env.ELEVENLABS_VOICE_ID || // 2️⃣ ENV
+    storedVoices[0]?.voiceId ||    // 3️⃣ První uložený hlas v DB
+    null;
+
+  if (!finalVoiceId) {
+    console.error("❌ Voice Generation error: žádné Voice ID nenalezeno!");
+    return NextResponse.json({
+      success: false,
+      error: "VOICE_ID_MISSING",
+      message: "Pipeline nemá k dispozici žádný Voice ID. Přidej hlas v modal Hlasy & Avatary nebo nastav ENV ELEVENLABS_VOICE_ID.",
+      storedVoicesCount: storedVoices.length
+    }, { status: 400 });
+  }
+
+  console.log("✅ Používám voiceId:", finalVoiceId);
+
   console.log('🚀 Spouštím AI Reels Pipeline s real-time tracking...');
   
   const pipelineId = `pipeline_${Date.now()}`;
   
   try {
-    // Parse request body
-    let body;
-    try {
-      const text = await request.text();
-      if (!text.trim()) {
-        return NextResponse.json({
-          success: false,
-          error: 'Request body je prázdný. Odešli URL a target_duration.',
-        }, { status: 400 });
-      }
-      body = JSON.parse(text);
-    } catch (parseError) {
+    // Validace body existence
+    if (!body) {
       return NextResponse.json({
         success: false,
-        error: 'Nevalidní JSON v request body',
+        error: 'Request body je prázdný. Odešli URL a target_duration.',
+        storedVoicesCount: storedVoices.length
       }, { status: 400 });
     }
 
@@ -94,6 +120,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({
         success: false,
         error: 'Nevalidní URL. URL musí začínat http:// nebo https://',
+        storedVoicesCount: storedVoices.length
       }, { status: 400 });
     }
 
@@ -101,6 +128,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({
         success: false,
         error: 'Target duration musí být mezi 5-60 sekund',
+        storedVoicesCount: storedVoices.length
+      }, { status: 400 });
+    }
+
+    // ✅ Fallback pro target_duration s debugem
+    const finalTargetDuration = target_duration || 15;
+    console.log(`🎯 Pipeline targetDuration: ${finalTargetDuration}s (původní: ${target_duration})`);
+    
+    // ✅ Validace targetDuration (ochrana proti nesmyslům)
+    if (finalTargetDuration < 3 || finalTargetDuration > 60) {
+      return NextResponse.json({
+        success: false,
+        error: `❌ Invalid targetDuration: ${finalTargetDuration} (must be 3–60 seconds)`,
+        storedVoicesCount: storedVoices.length
       }, { status: 400 });
     }
 
@@ -110,6 +151,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({
         success: false,
         error: 'FFmpeg není nainstalován. Spusť: brew install ffmpeg (macOS) nebo apt install ffmpeg (Linux)',
+        storedVoicesCount: storedVoices.length
       }, { status: 500 });
     }
 
@@ -119,7 +161,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Generování názvu pipeline
     const title = project_title || generatePipelineTitle(url);
     
-    const pipelineState = await PipelineStateManager.create(pipelineId, steps, title, target_duration);
+    const pipelineState = await PipelineStateManager.create(pipelineId, steps, title, finalTargetDuration);
     
     // Získání API klíčů
     const apiKeys = api_keys || getStoredApiKeys();
@@ -142,7 +184,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // Spustit pipeline asynchronně (bez await - non-blocking)
-    processPipelineAsync(pipelineId, url, target_duration, apiKeys, ai_assistants, voice_avatars).catch(async (error) => {
+    processPipelineAsync(pipelineId, url, finalTargetDuration, apiKeys, ai_assistants, voice_avatars, storedVoices).catch(async (error) => {
       console.error('💥 Pipeline Async Error:', error);
       await PipelineStateManager.updateStatus(pipelineId, 'error');
     });
@@ -178,14 +220,17 @@ async function processPipelineAsync(
   target_duration: number,
   apiKeys: any,
   ai_assistants: any[],
-  voice_avatars: any[]
+  voice_avatars: any[],
+  storedVoices: any[]
 ) {
+  console.log("📊 Using stored voices from parameter:", storedVoices);
+  
   let scrapedContent: any;
   let productSummary: string;
   let viralHooks: string[];
   let videoScript: string;
   let timeline: any;
-  let voiceDirection: string;
+  let voiceDirection: string = ''; // ✅ REMOVED: Voice Direction step eliminated
   let backgroundSelection: string;
   let musicSelection: string;
   let avatarBehavior: string;
@@ -294,6 +339,12 @@ ${scrapedContent.fullText}`;
     const scriptAssistant = ai_assistants?.find((a: any) => a.id === 'script-generation');
     // Bezpečné získání prvního hook
     const selectedHook = Array.isArray(viralHooks) ? viralHooks[0] : (typeof viralHooks === 'string' ? viralHooks : 'Amazing productivity tool!');
+    
+    // ✅ Debug log pro target_time
+    const wordsPerSecond = 2.3;
+    const maxWords = Math.floor(target_duration * wordsPerSecond);
+    console.log(`🎯 FINAL target_time: ${target_duration}s, maxWords: ${maxWords}`);
+    
     videoScript = await generateVideoScript(productSummary, selectedHook, target_duration, scriptAssistant);
     
     await PipelineStateManager.updateStep(pipelineId, 'script-generation', 'completed', videoScript);
@@ -308,25 +359,15 @@ ${scrapedContent.fullText}`;
     
     await PipelineStateManager.updateStep(pipelineId, 'timeline-creation', 'completed', {
       segments: timeline.segments || [],
-      metadata: timeline.metadata || {},
+      metadata: {},
       segmentsCount: timeline.segments?.length || 0,
-      totalDuration: timeline.metadata?.totalDuration || target_duration
+      totalDuration: timeline.totalDuration || target_duration
     });
     console.log('✅ Timeline Creator dokončen');
 
-    // KROKY 6-10: AI Asistenti s správnými parametry
+    // KROKY 7-10: AI Asistenti s správnými parametry
     
-    // KROK 7: Voice Direction 🎙️
-    console.log('🎙️ Voice Direction KROK: 🎙️ Voice Direction...');
-    await PipelineStateManager.updateStep(pipelineId, 'voice-direction', 'running');
-    
-    const voiceAssistant = ai_assistants?.find((a: any) => a.id === 'voice-direction');
-    voiceDirection = await generateVoiceDirection(videoScript, timeline, voiceAssistant);
-    
-    await PipelineStateManager.updateStep(pipelineId, 'voice-direction', 'completed', voiceDirection);
-    console.log('✅ 🎙️ Voice Direction dokončen');
-
-    // KROK 8: Background Selection 🎨
+    // KROK 7: Background Selection 🎨
     console.log('🎨 Background Selection KROK: 🎨 Background Selection...');
     await PipelineStateManager.updateStep(pipelineId, 'background-selection', 'running');
     
@@ -336,7 +377,7 @@ ${scrapedContent.fullText}`;
     await PipelineStateManager.updateStep(pipelineId, 'background-selection', 'completed', backgroundSelection);
     console.log('✅ 🎨 Background Selection dokončen');
 
-    // KROK 9: Music & Sound 🎵
+    // KROK 8: Music & Sound 🎵
     console.log('🎵 Music & Sound KROK: 🎵 Music & Sound...');
     await PipelineStateManager.updateStep(pipelineId, 'music-sound', 'running');
     
@@ -346,17 +387,17 @@ ${scrapedContent.fullText}`;
     await PipelineStateManager.updateStep(pipelineId, 'music-sound', 'completed', musicSelection);
     console.log('✅ 🎵 Music & Sound dokončen');
 
-    // KROK 10: Avatar Behavior 👤
+    // KROK 9: Avatar Behavior 👤
     console.log('👤 Avatar Behavior KROK: 👤 Avatar Behavior...');
     await PipelineStateManager.updateStep(pipelineId, 'avatar-behavior', 'running');
     
     const avatarAssistant = ai_assistants?.find((a: any) => a.id === 'avatar-behavior');
-    avatarBehavior = await generateAvatarBehavior(videoScript, voiceDirection, avatarAssistant);
+    avatarBehavior = await generateAvatarBehavior(videoScript, timeline, avatarAssistant);
     
     await PipelineStateManager.updateStep(pipelineId, 'avatar-behavior', 'completed', avatarBehavior);
     console.log('✅ 👤 Avatar Behavior dokončen');
 
-    // KROK 11: Thumbnail Concept 🖼️
+    // KROK 10: Thumbnail Concept 🖼️
     console.log('🖼️ Thumbnail Concept KROK: 🖼️ Thumbnail Concept...');
     await PipelineStateManager.updateStep(pipelineId, 'thumbnail-concept', 'running');
     
@@ -368,8 +409,8 @@ ${scrapedContent.fullText}`;
     await PipelineStateManager.updateStep(pipelineId, 'thumbnail-concept', 'completed', thumbnailConcept);
     console.log('✅ 🖼️ Thumbnail Concept dokončen');
 
-    // KROK 12: Voice Generation 🗣️
-    console.log('🗣️ KROK 12: Voice Generation...');
+    // KROK 11: Voice Generation 🗣️
+    console.log('🗣️ KROK 11: Voice Generation...');
     await PipelineStateManager.updateStep(pipelineId, 'voice-generation', 'running');
     
     let voiceGeneration = null;
@@ -390,38 +431,32 @@ ${scrapedContent.fullText}`;
         console.log('🎭 První voice avatar:', voice_avatars[0]);
       }
       
-      // ✅ PRIORITNÍ POŘADÍ PRO VOICE ID: Modal > Environment > API Keys
+      // ✅ PRIORITNÍ POŘADÍ PRO VOICE ID: Modal > Environment > DB Stored > API Keys
       const voiceIdFromModal = voice_avatars?.[0]?.voiceId;
       const voiceIdFromEnv = process.env.ELEVENLABS_VOICE_ID;
-      const voiceId = voiceIdFromModal || (voiceIdFromEnv !== 'VLOŽTE_SVŮJ_VOICE_ID_TADY' ? voiceIdFromEnv : null) || apiKeys.voiceId;
-      const avatarId = voice_avatars?.[0]?.avatarId;
+      const voiceIdFromDb = storedVoices?.[0]?.voiceId; // První uložený hlas z DB
+      const avatarId = voice_avatars?.[0]?.avatarId || storedVoices?.[0]?.avatarId;
       
       console.log('🔍 Voice ID sources - DETAILNÍ ANALÝZA:');
       console.log('🎭 Z modalu (voice_avatars[0].voiceId):', voiceIdFromModal || 'PRÁZDNÉ');
       console.log('🌍 Z environment (process.env.ELEVENLABS_VOICE_ID):', voiceIdFromEnv || 'PRÁZDNÉ');
       console.log('🔑 Z apiKeys (apiKeys.voiceId):', apiKeys.voiceId || 'PRÁZDNÉ');
-      console.log('🔑 FINÁLNÍ voiceId po prioritě:', voiceId || 'STÁLE CHYBÍ!!!');
+      console.log('🗄️ Z databáze (storedVoices[0].voiceId):', voiceIdFromDb || 'PRÁZDNÉ');
       console.log('👤 avatarId:', avatarId || 'NENÍ VYŽADOVÁNO');
       
-      // ❌ KRITICKÁ KONTROLA VOICE ID
-      if (!voiceId) {
-        const errorMsg = `❌ KRITICKÁ CHYBA: Voice ID není nastaveno!
-        
-🔍 DEBUG INFO:
-- voice_avatars length: ${voice_avatars?.length || 0}
-- voice_avatars[0]: ${JSON.stringify(voice_avatars?.[0] || 'undefined')}
-- process.env.ELEVENLABS_VOICE_ID: "${voiceIdFromEnv}"
-- apiKeys.voiceId: "${apiKeys.voiceId}"
+      // ✅ SPRÁVNÉ PRIORITY: Modal > ENV > DB > API Keys
+      let finalVoiceId = voiceIdFromModal || voiceIdFromEnv || voiceIdFromDb || apiKeys.voiceId;
+      
+      console.log('🔑 FINÁLNÍ voiceId po prioritě:', finalVoiceId || 'STÁLE CHYBÍ!!!');
 
-🛠️ ŘEŠENÍ:
-1️⃣ Otevři modal "🎭 Spravovat hlasy & avatary" a přidej Voice ID z ElevenLabs
-2️⃣ NEBO uprav .env.local: ELEVENLABS_VOICE_ID=your_voice_id_here (ne placeholder)
-3️⃣ NEBO nastav apiKeys.voiceId v UI
-
-📋 PŘÍKLAD SPRÁVNÉHO VOICE ID: qKpVWFjZyvaOXILFD0VR`;
-        
-        console.error(errorMsg);
-        throw new Error(errorMsg);
+      if (!finalVoiceId) {
+        console.error("❌ Voice Generation error: Žádné Voice ID nenalezeno!");
+        return NextResponse.json({
+          success: false,
+          error: "VOICE_ID_MISSING",
+          message: "Pipeline nemá k dispozici žádný Voice ID – přidej hlas v modal Hlasy & Avatary nebo nastav ENV ELEVENLABS_VOICE_ID.",
+          storedVoicesCount: storedVoices.length
+        }, { status: 400 });
       }
       
       // ✅ KONTROLA ELEVENLABS API KEY
@@ -441,7 +476,7 @@ ${scrapedContent.fullText}`;
       // 🚀 VYTVOŘ ENHANCED API KEYS S OVĚŘENÝMI HODNOTAMI
       const enhancedApiKeys = {
         ...apiKeys,
-        voiceId: voiceId,
+        voiceId: finalVoiceId,
         avatarId: avatarId || undefined
       };
       
@@ -453,7 +488,7 @@ ${scrapedContent.fullText}`;
       });
       
       // 🗣️ SKUTEČNÉ VOLÁNÍ ELEVENLABS API
-      voiceGeneration = await generateVoiceFromScript(videoScript, timeline, voiceDirection, enhancedApiKeys, target_duration);
+      voiceGeneration = await generateVoiceFromScript(videoScript, timeline, enhancedApiKeys, target_duration, pipelineId);
       
       console.log('🎉 Voice Generation SUCCESS - Výstupní data:');
       console.log('📊 segments count:', voiceGeneration.segments?.length || 0);
@@ -461,18 +496,69 @@ ${scrapedContent.fullText}`;
       console.log('🎯 target time:', voiceGeneration.targetTime, 'sekund');
       console.log('🎚️ speaking rate:', voiceGeneration.speakingRate);
       console.log('💾 audio files generated:', voiceGeneration.segments?.every(s => s.audioFilePath) ? 'ALL OK' : 'CHYBÍ');
+      console.log('🎵 final audio path:', voiceGeneration.finalAudioPath || 'Jen segmenty');
+      console.log('🎵 final audio duration:', voiceGeneration.finalAudioDuration ? `${voiceGeneration.finalAudioDuration.toFixed(2)}s` : 'N/A');
+      
+      // Extrahuj název audio souboru pro frontend
+      const audioFilePath = voiceGeneration.segments?.[0]?.audioFilePath || null;
+      const audioFileName = audioFilePath ? audioFilePath.split('/').pop() : null;
+      
+      // 🎬 PATCH: Přidání finalAudioPath pro frontend audio player
+      const finalAudioFilePath = voiceGeneration.finalAudioPath || audioFilePath;
+      const finalAudioFileName = finalAudioFilePath ? finalAudioFilePath.split('/').pop() : audioFileName;
       
       await PipelineStateManager.updateStep(pipelineId, 'voice-generation', 'completed', {
         segments: voiceGeneration.segments,
         totalDuration: voiceGeneration.totalDuration,
         targetTime: voiceGeneration.targetTime,
         speakingRate: voiceGeneration.speakingRate,
-        voiceId: voiceId,
+        voiceId: finalVoiceId,
+        // ✅ PŮVODNÍ PATHS (fallback pro kompatibilitu)
+        audioFilePath: audioFilePath,
+        audioFileName: audioFileName,
+        // ✅ FINÁLNÍ MERGED PATHS (priorita pro frontend)
+        finalAudioPath: voiceGeneration.finalAudioPath,
+        finalAudioDuration: voiceGeneration.finalAudioDuration,
+        mergedAudioFilePath: voiceGeneration.finalAudioPath, // alias pro jasnost
+        // ✅ Pro single entry point pro frontend
+        audioFilePathMerged: finalAudioFilePath, // unified field
         generatedAt: new Date().toISOString(),
-        success: true
+        success: true,
+        duration: voiceGeneration.finalAudioDuration || voiceGeneration.totalDuration
       });
       
       console.log('✅ 🗣️ Voice Generation ÚSPĚŠNĚ DOKONČEN!');
+      console.log('🎵 Audio soubor:', audioFileName);
+      
+      // ⏹️ Zastav pipeline po Voice Generation (dočasně vypnuty kroky 12–14)
+      console.log("⏹️ Pipeline se zastavila po Voice Generation (dočasně vypnuty kroky 12–14)");
+      
+      // Nastav final outputs pouze s dokončenými kroky
+      PipelineStateManager.setFinalOutputs(pipelineId, {
+        scraped_content: scrapedContent,
+        product_summary: productSummary,
+        viral_hooks: viralHooks,
+        video_script: videoScript,
+        timeline: timeline,
+        background_selection: backgroundSelection,
+        music_selection: musicSelection,
+        avatar_behavior: avatarBehavior,
+        thumbnail_concept: thumbnailConcept,
+        voice_generation: voiceGeneration
+      });
+
+      // Označit kroky 12-14 jako not_implemented
+      const notImplementedSteps = ['avatar-generation', 'background-video', 'final-merge'];
+      for (const stepId of notImplementedSteps) {
+        await PipelineStateManager.updateStep(pipelineId, stepId, 'not_implemented', 
+          'Tento krok bude implementován v další fázi s externí APIs integracemi.');
+      }
+
+      // Dokončit pipeline
+      await PipelineStateManager.updateStatus(pipelineId, 'completed');
+      console.log(`🎉 Pipeline ${pipelineId} dokončena úspěšně! (11/14 kroků)`);
+      
+      return; // Ukončit funkci zde
       
     } catch (error) {
       console.error('💥 Voice Generation Error - KOMPLETNÍ ANALÝZA:');
@@ -487,7 +573,10 @@ ${scrapedContent.fullText}`;
       console.error('  - timeline segments:', timeline?.segments?.length || 0);
       
       await PipelineStateManager.updateStep(pipelineId, 'voice-generation', 'error', {
-        error: error instanceof Error ? error.message : 'Neznámá chyba',
+        success: false,
+        error: "ELEVENLABS_API_ERROR",
+        message: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as any)?.response?.data || 'Unknown error',
         errorType: error instanceof Error ? error.constructor.name : 'Unknown',
         timestamp: new Date().toISOString(),
         context: {
@@ -500,33 +589,8 @@ ${scrapedContent.fullText}`;
       });
       
       console.log('❌ 🗣️ Voice Generation SKONČIL S CHYBOU - viz details výše');
+      throw error; // Re-throw error to stop pipeline
     }
-
-    // Nastav final outputs (včetně voice generation)
-    PipelineStateManager.setFinalOutputs(pipelineId, {
-      scraped_content: scrapedContent,
-      product_summary: productSummary,
-      viral_hooks: viralHooks,
-      video_script: videoScript,
-      timeline: timeline,
-      voice_direction: voiceDirection,
-      background_selection: backgroundSelection,
-      music_selection: musicSelection,
-      avatar_behavior: avatarBehavior,
-      thumbnail_concept: thumbnailConcept,
-      voice_generation: voiceGeneration
-    });
-
-    // Kroky 13-15 označit jako "not_implemented"
-    const notImplementedSteps = ['avatar-generation', 'background-video', 'final-merge'];
-    for (const stepId of notImplementedSteps) {
-      await PipelineStateManager.updateStep(pipelineId, stepId, 'not_implemented', 
-        'Tento krok bude implementován v další fázi s externí APIs integracemi.');
-    }
-
-    // Dokončení pipeline
-    await PipelineStateManager.updateStatus(pipelineId, 'completed');
-    console.log(`🎉 Pipeline ${pipelineId} dokončena úspěšně! (12/15 kroků)`);
 
   } catch (error) {
     console.error(`💥 Pipeline ${pipelineId} Error:`, error);

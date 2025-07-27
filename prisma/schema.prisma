@@ -55,3 +55,12 @@ model PipelineVersion {
 
   @@index([pipelineId, createdAt])
 }
+
+model VoiceAvatarPair {
+  id         String   @id @default(cuid())
+  name       String
+  voiceId    String
+  avatarId   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
